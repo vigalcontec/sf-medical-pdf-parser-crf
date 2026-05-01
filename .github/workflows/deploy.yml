@@ -1,0 +1,257 @@
+name: Deploy Step Function
+run-name: >-
+  ${{
+    github.event_name == 'workflow_dispatch' && github.event.inputs.action == 'destroy' && format('🗑️ Destroy: {0}', github.event.inputs.environment) ||
+    github.event_name == 'workflow_dispatch' && format('Manual: {0}', github.event.inputs.environment) ||
+    format('Deploy: {0}', github.ref_name)
+  }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment'
+        required: true
+        type: choice
+        options: [dev, qa, prod]
+      action:
+        description: 'Action to perform'
+        required: true
+        type: choice
+        options: [deploy, destroy]
+        default: deploy
+  push:
+    branches: [main, develop, "feature/*", "release/*"]
+    paths:
+      - 'terraform/**'
+      - '.github/workflows/deploy.yml'
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - 'terraform/**'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions: {}
+
+env:
+  AWS_REGION: eu-west-1
+  TF_VERSION: '1.10.0'
+
+jobs:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Detect Environment
+  # ─────────────────────────────────────────────────────────────────────────────
+  detect:
+    name: Detect Environment
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      environment: ${{ steps.env.outputs.environment }}
+      env_upper: ${{ steps.env.outputs.env_upper }}
+    steps:
+      - name: Detect Environment
+        id: env
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            ENV="${{ github.event.inputs.environment }}"
+          elif [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+            ENV="prod"
+          elif [[ "${{ github.ref }}" == refs/heads/release/* ]]; then
+            ENV="qa"
+          else
+            ENV="dev"
+          fi
+          echo "environment=${ENV}" >> $GITHUB_OUTPUT
+          echo "env_upper=$(echo ${ENV} | tr '[:lower:]' '[:upper:]')" >> $GITHUB_OUTPUT
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Validate & Lint
+  # ─────────────────────────────────────────────────────────────────────────────
+  validate:
+    name: Validate & Lint
+    runs-on: ubuntu-latest
+    needs: [detect]
+    if: github.event.inputs.action != 'destroy'
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Terraform Format Check
+        run: terraform fmt -check -recursive
+        working-directory: ./terraform
+
+      - name: Terraform Init (local)
+        run: terraform init -backend=false
+        working-directory: ./terraform
+
+      - name: Terraform Validate
+        run: terraform validate
+        working-directory: ./terraform
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Security Scan (Checkov)
+  # ─────────────────────────────────────────────────────────────────────────────
+  security:
+    name: Security Scan (Checkov)
+    runs-on: ubuntu-latest
+    needs: [detect]
+    if: github.event.inputs.action != 'destroy'
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run Checkov
+        uses: bridgecrewio/checkov-action@v12
+        with:
+          directory: terraform/
+          framework: terraform
+          soft_fail: true
+          output_format: cli
+          download_external_modules: false
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Deploy Infrastructure
+  # ─────────────────────────────────────────────────────────────────────────────
+  deploy:
+    name: Deploy (${{ needs.detect.outputs.environment }})
+    runs-on: ubuntu-latest
+    needs: [detect, validate, security]
+    if: github.event.inputs.action != 'destroy' && github.event_name != 'pull_request'
+    timeout-minutes: 20
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      ENV: ${{ needs.detect.outputs.environment }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets[format('AWS_ROLE_ARN_{0}', needs.detect.outputs.env_upper)] }}
+          role-session-name: sfn-deploy-${{ github.run_id }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Get Account ID
+        id: aws
+        run: echo "account_id=$(aws sts get-caller-identity --query Account --output text)" >> $GITHUB_OUTPUT
+
+      - name: Read Config
+        id: config
+        run: |
+          PROJECT_NAME=$(grep 'project_name\s*=' terraform/config.tf | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          FUNCTION_NAME=$(grep 'function_name\s*=' terraform/config.tf | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          COMPANY_NAME=$(grep 'company_name\s*=' terraform/config.tf | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          echo "project_name=${PROJECT_NAME}" >> $GITHUB_OUTPUT
+          echo "function_name=${FUNCTION_NAME}" >> $GITHUB_OUTPUT
+          echo "company_name=${COMPANY_NAME}" >> $GITHUB_OUTPUT
+
+      - name: Terraform Init
+        run: |
+          terraform init -reconfigure \
+            -backend-config="bucket=tfstate-${{ steps.config.outputs.company_name }}-${{ env.ENV }}-${{ steps.aws.outputs.account_id }}" \
+            -backend-config="key=${{ steps.config.outputs.project_name }}/stepfunction/${{ steps.config.outputs.function_name }}/terraform.tfstate" \
+            -backend-config="region=${{ env.AWS_REGION }}" \
+            -backend-config="encrypt=true"
+        working-directory: ./terraform
+
+      - name: Terraform Plan
+        run: |
+          terraform plan -out=tfplan -input=false \
+            -var="environment=${{ env.ENV }}"
+        working-directory: ./terraform
+
+      - name: Terraform Apply
+        run: terraform apply -auto-approve -input=false tfplan
+        working-directory: ./terraform
+
+      - name: Summary
+        run: |
+          echo "### ✅ Step Function Deployed" >> $GITHUB_STEP_SUMMARY
+          echo "- **Project:** ${{ steps.config.outputs.project_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **State Machine:** ${{ steps.config.outputs.function_name }}-${{ env.ENV }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Environment:** ${{ env.ENV }}" >> $GITHUB_STEP_SUMMARY
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Destroy Infrastructure
+  # ─────────────────────────────────────────────────────────────────────────────
+  destroy:
+    name: Destroy
+    runs-on: ubuntu-latest
+    needs: [detect]
+    if: github.event.inputs.action == 'destroy'
+    timeout-minutes: 20
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      ENV: ${{ needs.detect.outputs.environment }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets[format('AWS_ROLE_ARN_{0}', needs.detect.outputs.env_upper)] }}
+          role-session-name: sfn-destroy-${{ github.run_id }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Get Account ID
+        id: aws
+        run: echo "account_id=$(aws sts get-caller-identity --query Account --output text)" >> $GITHUB_OUTPUT
+
+      - name: Read Config
+        id: config
+        run: |
+          PROJECT_NAME=$(grep 'project_name\s*=' terraform/config.tf | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          FUNCTION_NAME=$(grep 'function_name\s*=' terraform/config.tf | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          COMPANY_NAME=$(grep 'company_name\s*=' terraform/config.tf | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          echo "project_name=${PROJECT_NAME}" >> $GITHUB_OUTPUT
+          echo "function_name=${FUNCTION_NAME}" >> $GITHUB_OUTPUT
+          echo "company_name=${COMPANY_NAME}" >> $GITHUB_OUTPUT
+
+      - name: Terraform Init
+        run: |
+          terraform init -reconfigure \
+            -backend-config="bucket=tfstate-${{ steps.config.outputs.company_name }}-${{ env.ENV }}-${{ steps.aws.outputs.account_id }}" \
+            -backend-config="key=${{ steps.config.outputs.project_name }}/stepfunction/${{ steps.config.outputs.function_name }}/terraform.tfstate" \
+            -backend-config="region=${{ env.AWS_REGION }}" \
+            -backend-config="encrypt=true"
+        working-directory: ./terraform
+
+      - name: Terraform Destroy
+        run: |
+          terraform destroy -auto-approve -input=false \
+            -var="environment=${{ env.ENV }}"
+        working-directory: ./terraform
+
+      - name: Summary
+        run: |
+          echo "### 🗑️ Infrastructure Destroyed" >> $GITHUB_STEP_SUMMARY
+          echo "- **Project:** ${{ steps.config.outputs.project_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **State Machine:** ${{ steps.config.outputs.function_name }}-${{ env.ENV }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Environment:** ${{ env.ENV }}" >> $GITHUB_STEP_SUMMARY
