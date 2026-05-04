@@ -47,6 +47,7 @@ output "event_rule_arn" {
 output "s3_trigger_bucket" {
   description = "S3 bucket being monitored"
   value       = local.s3_trigger.enabled ? local.datalake.raw.bucket_name : null
+  sensitive   = true
 }
 
 output "s3_trigger_prefix" {
