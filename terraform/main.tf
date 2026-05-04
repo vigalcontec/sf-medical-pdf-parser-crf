@@ -79,9 +79,10 @@ resource "aws_sfn_state_machine" "main" {
 
 # -----------------------------------------------------------------------------
 # CloudWatch Log Group
+# Standard path: /aws/{project_name}/{tool}/{stack_name}
 # -----------------------------------------------------------------------------
 resource "aws_cloudwatch_log_group" "main" {
-  name              = "/aws/states/${local.project_name}/stepfunction/${local.function_name}"
+  name              = "/aws/${local.project_name}/stepfunction/${local.function_name}"
   retention_in_days = local.log_retention_days
 
   tags = local.common_tags
