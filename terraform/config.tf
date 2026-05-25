@@ -1,31 +1,38 @@
 # =============================================================================
-# Configuration - Update these values for your project
+# Configuration - Clinical PDF Table Extraction Pipeline
 # =============================================================================
 
 locals {
   # ─────────────────────────────────────────────────────────────────────────────
-  # Project Configuration (UPDATE THESE)
+  # Project Configuration
   # ─────────────────────────────────────────────────────────────────────────────
-  project_name  = "clinical-rag-foundry"  # Project name for tfstate key (e.g., clinical-rag-foundry, sales)
-  function_name = "sf-medical-pdf-parser" # Step Function name (without env suffix)
-  company_name  = "vigalcontec"           # Company name for resource naming
+  project_name  = "clinical-rag-foundry"
+  function_name = "sf-clinical-pdf-parser"
+  company_name  = "vigalcontec"
 
   # ─────────────────────────────────────────────────────────────────────────────
-  # S3 Trigger Configuration
+  # S3 Trigger Configuration - Triggered by _events.json files
+  # These are created by the Locator Lambda after analyzing PDFs
   # ─────────────────────────────────────────────────────────────────────────────
   s3_trigger = {
-    enabled = true           # Set to false to disable S3 trigger
-    prefix  = "uploads/pdfs" # S3 prefix to monitor for PDF uploads
-    suffix  = ".pdf"         # File suffix filter
+    enabled = true
+    prefix  = "crf/clinical_pdfs/"
+    suffix  = "_events.json"
   }
 
   # ─────────────────────────────────────────────────────────────────────────────
-  # Lambda Functions to invoke (read from SSM)
-  # Each Lambda must be deployed separately and export its ARN to SSM at:
-  #   /{env}/lambda/{function_name}/function_arn
+  # Distributed Map Configuration
+  # ─────────────────────────────────────────────────────────────────────────────
+  distributed_map = {
+    max_concurrency = 40  # Max parallel Lambda invocations
+    tolerated_failure_percentage = 10  # Allow up to 10% failures
+  }
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Lambda Functions (read ARNs from SSM)
   # ─────────────────────────────────────────────────────────────────────────────
   lambda_functions = [
-    # "medical-pdf-parser",  # Add your Lambda function names here
+    "clinical-pdf-textract-crf",  # Textract Lambda for table extraction
   ]
 
   # ─────────────────────────────────────────────────────────────────────────────

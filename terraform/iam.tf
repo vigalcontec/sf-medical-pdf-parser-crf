@@ -67,29 +67,126 @@ resource "aws_iam_role_policy" "step_function_base" {
 }
 
 # -----------------------------------------------------------------------------
-# Step Function Lambda Policy (uncomment if invoking Lambda functions)
+# Step Function Lambda Policy - Invoke Textract Lambda
 # -----------------------------------------------------------------------------
-# resource "aws_iam_role_policy" "step_function_lambda" {
-#   count = length(local.lambda_functions) > 0 ? 1 : 0
-#   name  = "${local.full_name}-sfn-lambda"
-#   role  = aws_iam_role.step_function.id
-#
-#   policy = jsonencode({
-#     Version = "2012-10-17"
-#     Statement = [
-#       {
-#         Sid    = "InvokeLambda"
-#         Effect = "Allow"
-#         Action = [
-#           "lambda:InvokeFunction"
-#         ]
-#         Resource = [
-#           for arn in values(local.lambda_arns) : "${arn}*"
-#         ]
-#       }
-#     ]
-#   })
-# }
+resource "aws_iam_role_policy" "step_function_lambda" {
+  count = length(local.lambda_functions) > 0 ? 1 : 0
+  name  = "${local.full_name}-sfn-lambda"
+  role  = aws_iam_role.step_function.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "InvokeLambda"
+        Effect = "Allow"
+        Action = [
+          "lambda:InvokeFunction"
+        ]
+        Resource = [
+          for arn in values(local.lambda_arns) : "${arn}*"
+        ]
+      }
+    ]
+  })
+}
+
+# -----------------------------------------------------------------------------
+# Step Function S3 Policy - Read events.json for Distributed Map
+# -----------------------------------------------------------------------------
+resource "aws_iam_role_policy" "step_function_s3" {
+  name = "${local.full_name}-sfn-s3"
+  role = aws_iam_role.step_function.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "S3ReadEvents"
+        Effect = "Allow"
+        Action = [
+          "s3:GetObject",
+          "s3:ListBucket"
+        ]
+        Resource = [
+          local.datalake.raw.bucket_arn,
+          "${local.datalake.raw.bucket_arn}/crf/clinical_pdfs/*"
+        ]
+      },
+      {
+        Sid    = "KMSDecrypt"
+        Effect = "Allow"
+        Action = [
+          "kms:Decrypt"
+        ]
+        Resource = [
+          local.datalake.raw.kms_key_arn
+        ]
+      }
+    ]
+  })
+}
+
+# -----------------------------------------------------------------------------
+# Step Function DynamoDB Policy - Update job status
+# -----------------------------------------------------------------------------
+resource "aws_iam_role_policy" "step_function_dynamodb" {
+  name = "${local.full_name}-sfn-dynamodb"
+  role = aws_iam_role.step_function.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "DynamoDBUpdateJob"
+        Effect = "Allow"
+        Action = [
+          "dynamodb:UpdateItem",
+          "dynamodb:GetItem"
+        ]
+        Resource = [
+          local.dynamodb.clinical_pdf_jobs.table_arn
+        ]
+      }
+    ]
+  })
+}
+
+# -----------------------------------------------------------------------------
+# Step Function Distributed Map Policy - Start child executions
+# -----------------------------------------------------------------------------
+resource "aws_iam_role_policy" "step_function_distributed_map" {
+  name = "${local.full_name}-sfn-distributed-map"
+  role = aws_iam_role.step_function.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "StartChildExecutions"
+        Effect = "Allow"
+        Action = [
+          "states:StartExecution",
+          "states:DescribeExecution",
+          "states:StopExecution"
+        ]
+        Resource = [
+          "arn:aws:states:${local.aws_region}:${local.account_id}:execution:${local.full_name}/*"
+        ]
+      },
+      {
+        Sid    = "RedriveExecutions"
+        Effect = "Allow"
+        Action = [
+          "states:RedriveExecution"
+        ]
+        Resource = [
+          "arn:aws:states:${local.aws_region}:${local.account_id}:execution:${local.full_name}/*"
+        ]
+      }
+    ]
+  })
+}
 
 # -----------------------------------------------------------------------------
 # EventBridge Role (for S3 trigger)

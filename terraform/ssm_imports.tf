@@ -56,18 +56,38 @@ locals {
 }
 
 # =============================================================================
-# Lambda Function ARNs (uncomment when Lambda functions are deployed)
+# DynamoDB Configuration (from dynamodb-clinical-pdf-jobs-crf)
 # =============================================================================
-# Each Lambda must export its ARN to SSM at: /{env}/lambda/{name}/function_arn
+data "aws_ssm_parameter" "dynamodb_table_name" {
+  name = "/${var.environment}/${local.project_name}/dynamodb/clinical-pdf-jobs-crf/table_name"
+}
 
-# data "aws_ssm_parameter" "lambda_arns" {
-#   for_each = toset(local.lambda_functions)
-#   name     = "/${var.environment}/lambda/${each.value}/function_arn"
-# }
-#
-# locals {
-#   lambda_arns = {
-#     for name in local.lambda_functions :
-#     name => data.aws_ssm_parameter.lambda_arns[name].value
-#   }
-# }
+data "aws_ssm_parameter" "dynamodb_table_arn" {
+  name = "/${var.environment}/${local.project_name}/dynamodb/clinical-pdf-jobs-crf/table_arn"
+}
+
+locals {
+  dynamodb = {
+    clinical_pdf_jobs = {
+      table_name = data.aws_ssm_parameter.dynamodb_table_name.value
+      table_arn  = data.aws_ssm_parameter.dynamodb_table_arn.value
+    }
+  }
+}
+
+# =============================================================================
+# Lambda Function ARNs (from lambda-clinical-pdf-textract-crf)
+# =============================================================================
+# Each Lambda must export its ARN to SSM at: /{env}/{project}/lambda/{name}/function_arn
+
+data "aws_ssm_parameter" "lambda_arns" {
+  for_each = toset(local.lambda_functions)
+  name     = "/${var.environment}/${local.project_name}/lambda/${each.value}/function_arn"
+}
+
+locals {
+  lambda_arns = {
+    for name in local.lambda_functions :
+    name => data.aws_ssm_parameter.lambda_arns[name].value
+  }
+}

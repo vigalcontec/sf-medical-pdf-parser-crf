@@ -1,38 +1,53 @@
-# SF Medical PDF Parser
+# SF Clinical PDF Parser
 
 [![AWS Step Functions](https://img.shields.io/badge/AWS-Step%20Functions-FF9900?logo=amazon-aws)](https://aws.amazon.com/step-functions/)
 [![Terraform](https://img.shields.io/badge/Terraform-1.10%2B-7B42BC?logo=terraform)](https://www.terraform.io/)
 
-AWS Step Functions workflow triggered by S3 PDF uploads. Invokes a Lambda function (deployed separately) read from SSM Parameter Store.
+AWS Step Functions workflow for **Clinical PDF Table Extraction** using **Distributed Map** for parallel processing. Triggered by `_events.json` files created by the Locator Lambda.
 
 ---
 
 ## Architecture
 
 ```
-┌─────────────┐     ┌──────────────┐     ┌─────────────────┐     ┌─────────────┐
-│   S3 Raw    │────▶│  EventBridge │────▶│ Step Functions  │────▶│   Lambda    │
-│  (uploads/) │     │    Rule      │     │  State Machine  │     │  (from SSM) │
-└─────────────┘     └──────────────┘     └─────────────────┘     └─────────────┘
+┌─────────────────┐     ┌──────────────┐     ┌─────────────────────────────────────────┐
+│  Locator Lambda │     │  EventBridge │     │         STEP FUNCTIONS                  │
+│  creates:       │────▶│    Rule      │────▶│                                         │
+│  _events.json   │     │              │     │  ┌─────────────────────────────────┐    │
+└─────────────────┘     └──────────────┘     │  │     DISTRIBUTED MAP (40x)       │    │
+                                              │  │                                 │    │
+                                              │  │  ┌─────┐ ┌─────┐     ┌─────┐   │    │
+                                              │  │  │ λ 1 │ │ λ 2 │ ... │λ 127│   │    │
+                                              │  │  │pg 7 │ │pg 8 │     │pg301│   │    │
+                                              │  │  └─────┘ └─────┘     └─────┘   │    │
+                                              │  │      Textract Lambda           │    │
+                                              │  └─────────────────────────────────┘    │
+                                              │                  │                      │
+                                              │                  ▼                      │
+                                              │  ┌─────────────────────────────────┐    │
+                                              │  │  Update DynamoDB Job Status     │    │
+                                              │  └─────────────────────────────────┘    │
+                                              └─────────────────────────────────────────┘
 ```
 
-**Trigger Flow:**
-1. PDF uploaded to `s3://{raw-bucket}/uploads/pdfs/*.pdf`
-2. EventBridge rule detects the S3 event
-3. Step Function execution starts with event data
-4. Lambda function (ARN from SSM) processes the PDF
+**Pipeline Flow:**
+1. **Locator Lambda** analyzes PDF → creates `_events.json` in S3
+2. **EventBridge** detects `*_events.json` file creation
+3. **Step Functions** reads JSON array from S3
+4. **Distributed Map** invokes Textract Lambda for each table/page (up to 40 parallel)
+5. **DynamoDB** job status updated to SUCCESS
 
 ---
 
 ## Features
 
-- ✅ **S3 Event Trigger** - Automatic execution on PDF upload
-- ✅ **Step Functions** - Orchestrated workflow with retry/error handling
-- ✅ **Lambda from SSM** - References external Lambda via SSM Parameter Store
-- ✅ **Terraform IaC** - Full infrastructure as code
-- ✅ **GitHub Actions** - CI/CD with OIDC authentication
-- ✅ **Multi-environment** - dev, qa, prod support
+- ✅ **Distributed Map** - Process 100+ table events in parallel (40 concurrent)
+- ✅ **S3 ItemReader** - Reads events directly from S3 JSON file
+- ✅ **Automatic Retry** - 3 retries with exponential backoff
+- ✅ **Fault Tolerance** - 10% failure threshold before workflow fails
+- ✅ **DynamoDB Integration** - Updates job status on completion
 - ✅ **X-Ray Tracing** - End-to-end observability
+- ✅ **Terraform IaC** - Full infrastructure as code
 
 ---
 
@@ -62,8 +77,9 @@ sf-medical-pdf-parser-crf/
 
 - **Terraform 1.10+**
 - **AWS Datalake** - `aws-datalake-layers` deployed (provides S3 buckets)
-- **Lambda Function** - Deployed separately with ARN exported to SSM at:
-  - `/{env}/lambda/{function_name}/function_arn`
+- **DynamoDB Table** - `dynamodb-clinical-pdf-jobs-crf` deployed
+- **Locator Lambda** - `lambda-clinical-pdf-tables-locator-crf` deployed
+- **Textract Lambda** - `lambda-clinical-pdf-textract-crf` deployed with ARN exported to SSM
 
 ---
 
@@ -75,10 +91,19 @@ Edit `terraform/config.tf`:
 
 ```hcl
 locals {
-  project_name         = "sf-medical-pdf-parser"  # Step Function name
-  company_name         = "vigalcontec"            # Your company
-  s3_trigger_prefix    = "uploads/pdfs/"          # S3 path to monitor
-  lambda_function_name = "my-lambda-function"     # Lambda to invoke (from SSM)
+  project_name  = "clinical-rag-foundry"
+  function_name = "sf-clinical-pdf-parser"
+  
+  s3_trigger = {
+    enabled = true
+    prefix  = "crf/clinical_pdfs/"
+    suffix  = "_events.json"
+  }
+  
+  distributed_map = {
+    max_concurrency = 40
+    tolerated_failure_percentage = 10
+  }
 }
 ```
 
@@ -98,31 +123,44 @@ Push to trigger CI/CD or use manual workflow dispatch.
 
 ---
 
-## Lambda SSM Requirement
+## SSM Parameters Required
 
-The Step Function reads the Lambda ARN from SSM Parameter Store:
+The Step Function reads these SSM parameters:
 
-```
-/${environment}/lambda/${lambda_function_name}/function_arn
-```
-
-**Example:** `/{dev}/lambda/my-lambda-function/function_arn`
-
-Deploy your Lambda using the `aws-lambda-python-template` which automatically exports this parameter.
+| Parameter | Source |
+|-----------|--------|
+| `/{env}/clinical-rag-foundry/lambda/clinical-pdf-textract-crf/function_arn` | Textract Lambda |
+| `/{env}/clinical-rag-foundry/dynamodb/clinical-pdf-jobs-crf/table_name` | DynamoDB |
+| `/{env}/clinical-rag-foundry/dynamodb/clinical-pdf-jobs-crf/table_arn` | DynamoDB |
+| `/{env}/datalake/raw/bucket_name` | Datalake |
 
 ---
 
 ## Event Format
 
-The Lambda receives this event from Step Functions:
+### Input (from EventBridge)
 
 ```json
 {
-  "bucket": "datalake-raw-vigalcontec-dev-123456789012",
-  "key": "uploads/pdfs/medical-report.pdf",
-  "size": 1024,
-  "eventTime": "2026-04-30T12:00:00Z",
-  "environment": "dev"
+  "bucket": "datalake-raw-vigalcontec-dev-002332700133",
+  "key": "crf/clinical_pdfs/keytruda/20260522164300/keytruda-epar-product-information_en_events.json",
+  "size": 45678,
+  "eventTime": "2026-05-22T16:43:00Z"
+}
+```
+
+### Each Textract Lambda receives
+
+```json
+{
+  "s3_bucket": "datalake-raw-vigalcontec-dev-002332700133",
+  "s3_key": "crf/clinical_pdfs/keytruda/20260522164300/keytruda-epar-product-information_en.pdf",
+  "product_name": "keytruda",
+  "table_name": "Table 1: Recommended treatment modifications for KEYTRUDA",
+  "table_number": 1,
+  "page": 7,
+  "table_index_on_page": 0,
+  "events_s3_key": "crf/clinical_pdfs/keytruda/20260522164300/keytruda-epar-product-information_en_events.json"
 }
 ```
 
@@ -150,24 +188,37 @@ The Lambda receives this event from Step Functions:
 
 | Resource | Description |
 |----------|-------------|
-| Step Function | State machine with Lambda invocation step |
-| EventBridge Rule | S3 upload trigger |
-| IAM Roles | Step Function, EventBridge |
+| Step Function | Distributed Map state machine |
+| EventBridge Rule | Triggers on `*_events.json` creation |
+| IAM Roles | Step Function (S3, Lambda, DynamoDB), EventBridge |
 | CloudWatch Logs | Step Function execution logs |
 
 ---
 
-## Testing the Trigger
+## Testing
 
-Upload a PDF to trigger the workflow:
+### Manual Execution
 
 ```bash
-aws s3 cp test.pdf s3://{raw-bucket}/uploads/pdfs/test.pdf
+aws stepfunctions start-execution \
+  --state-machine-arn arn:aws:states:eu-west-1:002332700133:stateMachine:sf-clinical-pdf-parser-dev \
+  --input '{
+    "bucket": "datalake-raw-vigalcontec-dev-002332700133",
+    "key": "crf/clinical_pdfs/keytruda/20260522164300/keytruda-epar-product-information_en_events.json"
+  }'
 ```
 
-Check Step Function execution:
+### Check Execution Status
 
 ```bash
 aws stepfunctions list-executions \
-  --state-machine-arn arn:aws:states:eu-west-1:123456789012:stateMachine:sf-medical-pdf-parser-dev
+  --state-machine-arn arn:aws:states:eu-west-1:002332700133:stateMachine:sf-clinical-pdf-parser-dev \
+  --max-results 5
+```
+
+### View Execution Details
+
+```bash
+aws stepfunctions describe-execution \
+  --execution-arn arn:aws:states:eu-west-1:002332700133:execution:sf-clinical-pdf-parser-dev:xxx
 ```
