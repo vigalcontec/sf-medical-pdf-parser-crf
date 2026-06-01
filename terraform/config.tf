@@ -24,15 +24,16 @@ locals {
   # Distributed Map Configuration
   # ─────────────────────────────────────────────────────────────────────────────
   distributed_map = {
-    max_concurrency = 40  # Max parallel Lambda invocations
-    tolerated_failure_percentage = 10  # Allow up to 10% failures
+    max_concurrency              = 40 # Max parallel Lambda invocations
+    tolerated_failure_percentage = 10 # Allow up to 10% failures
   }
 
   # ─────────────────────────────────────────────────────────────────────────────
   # Lambda Functions (read ARNs from SSM)
   # ─────────────────────────────────────────────────────────────────────────────
   lambda_functions = [
-    "clinical-pdf-textract-crf",  # Textract Lambda for table extraction
+    "clinical-pdf-textract-crf",      # Textract Lambda for table extraction
+    "clinical-pdf-normalization-crf", # Normalization Lambda (Claude AI)
   ]
 
   # ─────────────────────────────────────────────────────────────────────────────

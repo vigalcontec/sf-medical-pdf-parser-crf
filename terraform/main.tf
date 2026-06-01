@@ -25,7 +25,7 @@ resource "aws_sfn_state_machine" "main" {
       ExtractJobIdFromKey = {
         Type = "Pass"
         Parameters = {
-          "s3_bucket.$"    = "$.bucket"
+          "s3_bucket.$"     = "$.bucket"
           "events_s3_key.$" = "$.key"
           # job_id will be passed from DynamoDB lookup or derived
         }
@@ -49,16 +49,16 @@ resource "aws_sfn_state_machine" "main" {
           }
         }
         ItemSelector = {
-          "s3_bucket.$"          = "$$.Map.Item.Value.s3_bucket"
-          "s3_key.$"             = "$$.Map.Item.Value.s3_key"
-          "product_name.$"       = "$$.Map.Item.Value.product_name"
-          "table_name.$"         = "$$.Map.Item.Value.table_name"
-          "table_number.$"       = "$$.Map.Item.Value.table_number"
-          "page.$"               = "$$.Map.Item.Value.page"
+          "s3_bucket.$"           = "$$.Map.Item.Value.s3_bucket"
+          "s3_key.$"              = "$$.Map.Item.Value.s3_key"
+          "product_name.$"        = "$$.Map.Item.Value.product_name"
+          "table_name.$"          = "$$.Map.Item.Value.table_name"
+          "table_number.$"        = "$$.Map.Item.Value.table_number"
+          "page.$"                = "$$.Map.Item.Value.page"
           "table_index_on_page.$" = "$$.Map.Item.Value.table_index_on_page"
-          "events_s3_key.$"      = "$.events_s3_key"
+          "events_s3_key.$"       = "$.events_s3_key"
         }
-        MaxConcurrency = local.distributed_map.max_concurrency
+        MaxConcurrency             = local.distributed_map.max_concurrency
         ToleratedFailurePercentage = local.distributed_map.tolerated_failure_percentage
         ItemProcessor = {
           ProcessorConfig = {
@@ -68,7 +68,7 @@ resource "aws_sfn_state_machine" "main" {
           StartAt = "ExtractTableWithTextract"
           States = {
             # ─────────────────────────────────────────────────────────────────
-            # Invoke Textract Lambda for each table/page
+            # Step 1: Invoke Textract Lambda for each table/page
             # ─────────────────────────────────────────────────────────────────
             ExtractTableWithTextract = {
               Type     = "Task"
@@ -90,8 +90,71 @@ resource "aws_sfn_state_machine" "main" {
                   BackoffRate     = 2
                 }
               ]
-              ResultPath = "$.lambda_result"
-              End        = true
+              ResultSelector = {
+                "status.$"               = "$.Payload.status"
+                "s3_bucket.$"            = "$.Payload.s3_bucket"
+                "s3_key.$"               = "$.Payload.s3_key"
+                "product_name.$"         = "$.Payload.product_name"
+                "table_name.$"           = "$.Payload.table_name"
+                "table_number.$"         = "$.Payload.table_number"
+                "pages_processed.$"      = "$.Payload.pages_processed"
+                "table_index_on_page.$"  = "$.Payload.table_index_on_page"
+                "tables_found_on_page.$" = "$.Payload.tables_found_on_page"
+                "table.$"                = "$.Payload.table"
+                "events_s3_key.$"        = "$.Payload.events_s3_key"
+                "error.$"                = "$.Payload.error"
+              }
+              Next = "NormalizeTableWithClaude"
+              Catch = [
+                {
+                  ErrorEquals = ["States.ALL"]
+                  ResultPath  = "$.error_info"
+                  Next        = "NormalizeTableWithClaude"
+                }
+              ]
+            }
+
+            # ─────────────────────────────────────────────────────────────────
+            # Step 2: Normalize extracted table data with Claude AI
+            # ─────────────────────────────────────────────────────────────────
+            NormalizeTableWithClaude = {
+              Type     = "Task"
+              Resource = "arn:aws:states:::lambda:invoke"
+              Parameters = {
+                FunctionName = local.lambda_arns["clinical-pdf-normalization-crf"]
+                "Payload.$"  = "$"
+              }
+              Retry = [
+                {
+                  ErrorEquals = [
+                    "Lambda.ServiceException",
+                    "Lambda.AWSLambdaException",
+                    "Lambda.TooManyRequestsException",
+                    "Lambda.SdkClientException"
+                  ]
+                  IntervalSeconds = 5
+                  MaxAttempts     = 2
+                  BackoffRate     = 2
+                }
+              ]
+              ResultSelector = {
+                "status.$"               = "$.Payload.status"
+                "product_name.$"         = "$.Payload.product_name"
+                "table_name.$"           = "$.Payload.table_name"
+                "table_number.$"         = "$.Payload.table_number"
+                "page.$"                 = "$.Payload.page"
+                "table_type_detected.$"  = "$.Payload.table_type_detected"
+                "normalization_status.$" = "$.Payload.normalization_status"
+                "output_uri.$"           = "$.Payload.output_uri"
+              }
+              End = true
+              Catch = [
+                {
+                  ErrorEquals = ["States.ALL"]
+                  ResultPath  = "$.normalization_error"
+                  End         = true
+                }
+              ]
             }
           }
         }
@@ -116,9 +179,9 @@ resource "aws_sfn_state_machine" "main" {
             "#status" = "status"
           }
           ExpressionAttributeValues = {
-            ":status"  = { S = "SUCCESS" }
-            ":now"     = { "S.$" = "$$.State.EnteredTime" }
-            ":gsi1pk"  = { S = "STATUS#SUCCESS" }
+            ":status" = { S = "SUCCESS" }
+            ":now"    = { "S.$" = "$$.State.EnteredTime" }
+            ":gsi1pk" = { S = "STATUS#SUCCESS" }
           }
         }
         End = true

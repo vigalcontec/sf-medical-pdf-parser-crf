@@ -10,31 +10,42 @@ AWS Step Functions workflow for **Clinical PDF Table Extraction** using **Distri
 ## Architecture
 
 ```
-┌─────────────────┐     ┌──────────────┐     ┌─────────────────────────────────────────┐
-│  Locator Lambda │     │  EventBridge │     │         STEP FUNCTIONS                  │
-│  creates:       │────▶│    Rule      │────▶│                                         │
-│  _events.json   │     │              │     │  ┌─────────────────────────────────┐    │
-└─────────────────┘     └──────────────┘     │  │     DISTRIBUTED MAP (40x)       │    │
-                                              │  │                                 │    │
-                                              │  │  ┌─────┐ ┌─────┐     ┌─────┐   │    │
-                                              │  │  │ λ 1 │ │ λ 2 │ ... │λ 127│   │    │
-                                              │  │  │pg 7 │ │pg 8 │     │pg301│   │    │
-                                              │  │  └─────┘ └─────┘     └─────┘   │    │
-                                              │  │      Textract Lambda           │    │
-                                              │  └─────────────────────────────────┘    │
-                                              │                  │                      │
-                                              │                  ▼                      │
-                                              │  ┌─────────────────────────────────┐    │
-                                              │  │  Update DynamoDB Job Status     │    │
-                                              │  └─────────────────────────────────┘    │
-                                              └─────────────────────────────────────────┘
+┌─────────────────┐     ┌──────────────┐     ┌───────────────────────────────────────────────────────┐
+│  Locator Lambda │     │  EventBridge │     │                   STEP FUNCTIONS                      │
+│  creates:       │────▶│    Rule      │────▶│                                                       │
+│  _events.json   │     │              │     │  ┌─────────────────────────────────────────────────┐  │
+└─────────────────┘     └──────────────┘     │  │           DISTRIBUTED MAP (40 concurrent)       │  │
+                                              │  │                                                 │  │
+                                              │  │  ┌─────────────────────────────────────────┐   │  │
+                                              │  │  │  For each table event:                  │   │  │
+                                              │  │  │                                         │   │  │
+                                              │  │  │  ┌─────────────┐    ┌────────────────┐  │   │  │
+                                              │  │  │  │  Textract   │───▶│ Normalization  │  │   │  │
+                                              │  │  │  │   Lambda    │    │ Lambda (Claude)│  │   │  │
+                                              │  │  │  │ Extract PDF │    │ Normalize JSON │  │   │  │
+                                              │  │  │  └─────────────┘    └────────────────┘  │   │  │
+                                              │  │  │                            │            │   │  │
+                                              │  │  │                            ▼            │   │  │
+                                              │  │  │                     ┌────────────┐      │   │  │
+                                              │  │  │                     │ S3 (JSONL) │      │   │  │
+                                              │  │  │                     └────────────┘      │   │  │
+                                              │  │  └─────────────────────────────────────────┘   │  │
+                                              │  └─────────────────────────────────────────────────┘  │
+                                              │                         │                             │
+                                              │                         ▼                             │
+                                              │  ┌─────────────────────────────────────────────────┐  │
+                                              │  │           Update DynamoDB Job Status            │  │
+                                              │  └─────────────────────────────────────────────────┘  │
+                                              └───────────────────────────────────────────────────────┘
 ```
 
 **Pipeline Flow:**
 1. **Locator Lambda** analyzes PDF → creates `_events.json` in S3
 2. **EventBridge** detects `*_events.json` file creation
 3. **Step Functions** reads JSON array from S3
-4. **Distributed Map** invokes Textract Lambda for each table/page (up to 40 parallel)
+4. **Distributed Map** processes each table (up to 40 parallel):
+   - **Textract Lambda** extracts table from PDF page
+   - **Normalization Lambda** normalizes data with Claude AI → writes JSONL to S3
 5. **DynamoDB** job status updated to SUCCESS
 
 ---
@@ -79,7 +90,8 @@ sf-medical-pdf-parser-crf/
 - **AWS Datalake** - `aws-datalake-layers` deployed (provides S3 buckets)
 - **DynamoDB Table** - `dynamodb-clinical-pdf-jobs-crf` deployed
 - **Locator Lambda** - `lambda-clinical-pdf-tables-locator-crf` deployed
-- **Textract Lambda** - `lambda-clinical-pdf-textract-crf` deployed with ARN exported to SSM
+- **Textract Lambda** - `lambda-clinical-pdf-tables-textract-crf` deployed with ARN exported to SSM
+- **Normalization Lambda** - `lambda-clinical-pdf-tables-normalization-crf` deployed with ARN exported to SSM
 
 ---
 
@@ -130,6 +142,7 @@ The Step Function reads these SSM parameters:
 | Parameter | Source |
 |-----------|--------|
 | `/{env}/clinical-rag-foundry/lambda/clinical-pdf-textract-crf/function_arn` | Textract Lambda |
+| `/{env}/clinical-rag-foundry/lambda/clinical-pdf-normalization-crf/function_arn` | Normalization Lambda |
 | `/{env}/clinical-rag-foundry/dynamodb/clinical-pdf-jobs-crf/table_name` | DynamoDB |
 | `/{env}/clinical-rag-foundry/dynamodb/clinical-pdf-jobs-crf/table_arn` | DynamoDB |
 | `/{env}/datalake/raw/bucket_name` | Datalake |
