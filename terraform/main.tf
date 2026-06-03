@@ -157,7 +157,7 @@ resource "aws_sfn_state_machine" "main" {
               ]
             }
             TableNormalizationFailed = {
-              Type = "Fail"
+              Type  = "Fail"
               Error = "TableNormalizationFailed"
               Cause = "One or more tables failed normalization"
             }
