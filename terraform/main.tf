@@ -152,9 +152,14 @@ resource "aws_sfn_state_machine" "main" {
                 {
                   ErrorEquals = ["States.ALL"]
                   ResultPath  = "$.normalization_error"
-                  End         = true
+                  End         = "TableNormalizationFailed"
                 }
               ]
+            }
+            TableNormalizationFailed = {
+              Type = "Fail"
+              Error = "TableNormalizationFailed"
+              Cause = "One or more tables failed normalization"
             }
           }
         }
