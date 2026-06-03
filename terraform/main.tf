@@ -147,19 +147,26 @@ resource "aws_sfn_state_machine" "main" {
                 "normalization_status.$" = "$.Payload.normalization_status"
                 "output_uri.$"           = "$.Payload.output_uri"
               }
-              End = true
               Catch = [
                 {
                   ErrorEquals = ["States.ALL"]
                   ResultPath  = "$.normalization_error"
-                  End         = "TableNormalizationFailed"
+                  Next        = "HandleNormalizationError"
                 }
               ]
+              Next = "ItemComplete"
             }
-            TableNormalizationFailed = {
-              Type  = "Fail"
-              Error = "TableNormalizationFailed"
-              Cause = "One or more tables failed normalization"
+            HandleNormalizationError = {
+              Type = "Pass"
+              Parameters = {
+                "status"  = "FAILED"
+                "error.$" = "$.normalization_error"
+              }
+              End = true
+            }
+            ItemComplete = {
+              Type = "Pass"
+              End  = true
             }
           }
         }
