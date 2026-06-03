@@ -163,10 +163,19 @@ resource "aws_iam_role_policy" "step_function_distributed_map" {
     Version = "2012-10-17"
     Statement = [
       {
-        Sid    = "StartChildExecutions"
+        Sid    = "StartExecution"
         Effect = "Allow"
         Action = [
-          "states:StartExecution",
+          "states:StartExecution"
+        ]
+        Resource = [
+          "arn:aws:states:${local.aws_region}:${local.account_id}:stateMachine:${local.full_name}"
+        ]
+      },
+      {
+        Sid    = "ManageExecutions"
+        Effect = "Allow"
+        Action = [
           "states:DescribeExecution",
           "states:StopExecution"
         ]
