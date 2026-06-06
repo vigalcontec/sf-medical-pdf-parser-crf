@@ -102,7 +102,6 @@ resource "aws_sfn_state_machine" "main" {
                 "tables_found_on_page.$" = "$.Payload.tables_found_on_page"
                 "table.$"                = "$.Payload.table"
                 "events_s3_key.$"        = "$.Payload.events_s3_key"
-                "error.$"                = "$.Payload.error"
               }
               Next = "NormalizeTableWithClaude"
               Catch = [
