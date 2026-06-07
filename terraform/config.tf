@@ -24,7 +24,7 @@ locals {
   # Distributed Map Configuration
   # ─────────────────────────────────────────────────────────────────────────────
   distributed_map = {
-    max_concurrency              = 40 # Max parallel Lambda invocations
+    max_concurrency              = 10 # Max parallel Lambda invocations
     tolerated_failure_percentage = 10 # Allow up to 10% failures
   }
 
