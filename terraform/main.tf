@@ -16,18 +16,17 @@ resource "aws_sfn_state_machine" "main" {
   # ───────────────────────────────────────────────────────────────────────────
   definition = jsonencode({
     Comment = "Clinical PDF Table Extraction Pipeline - Distributed Map"
-    StartAt = "ExtractJobIdFromKey"
+    StartAt = "PrepareInput"
     States = {
       # ─────────────────────────────────────────────────────────────────────────
-      # Extract job_id from the events file key
+      # Prepare input for Distributed Map
       # Input: { bucket, key } from EventBridge
       # ─────────────────────────────────────────────────────────────────────────
-      ExtractJobIdFromKey = {
+      PrepareInput = {
         Type = "Pass"
         Parameters = {
           "s3_bucket.$"     = "$.bucket"
           "events_s3_key.$" = "$.key"
-          # job_id will be passed from DynamoDB lookup or derived
         }
         Next = "ProcessTableEvents"
       }
@@ -35,6 +34,7 @@ resource "aws_sfn_state_machine" "main" {
       # ─────────────────────────────────────────────────────────────────────────
       # Distributed Map - Process each table event in parallel
       # Reads the JSON array from S3 and invokes Lambda for each item
+      # Each event contains job_id for tracking
       # ─────────────────────────────────────────────────────────────────────────
       ProcessTableEvents = {
         Type = "Map"
@@ -49,6 +49,7 @@ resource "aws_sfn_state_machine" "main" {
           }
         }
         ItemSelector = {
+          "job_id.$"              = "$$.Map.Item.Value.job_id"
           "s3_bucket.$"           = "$$.Map.Item.Value.s3_bucket"
           "s3_key.$"              = "$$.Map.Item.Value.s3_key"
           "product_name.$"        = "$$.Map.Item.Value.product_name"
@@ -136,6 +137,7 @@ resource "aws_sfn_state_machine" "main" {
                 }
               ]
               ResultSelector = {
+                "job_id.$"               = "$.Payload.job_id"
                 "status.$"               = "$.Payload.status"
                 "product_name.$"         = "$.Payload.product_name"
                 "table_name.$"           = "$.Payload.table_name"
@@ -174,6 +176,7 @@ resource "aws_sfn_state_machine" "main" {
 
       # ─────────────────────────────────────────────────────────────────────────
       # Update DynamoDB job status to SUCCESS
+      # Gets job_id from the first item in map_results array
       # ─────────────────────────────────────────────────────────────────────────
       UpdateJobStatusSuccess = {
         Type     = "Task"
@@ -181,7 +184,8 @@ resource "aws_sfn_state_machine" "main" {
         Parameters = {
           TableName = local.dynamodb.clinical_pdf_jobs.table_name
           Key = {
-            PK = { "S.$" = "States.Format('JOB#{}', $.job_id)" }
+            # Get job_id from the first item in map_results array
+            PK = { "S.$" = "States.Format('JOB#{}', $.map_results[0].job_id)" }
             SK = { S = "METADATA" }
           }
           UpdateExpression = "SET #status = :status, updated_at = :now, GSI1PK = :gsi1pk, GSI1SK = :now"
