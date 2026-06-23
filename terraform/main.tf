@@ -93,24 +93,80 @@ resource "aws_sfn_state_machine" "main" {
               ]
               ResultSelector = {
                 "status.$"               = "$.Payload.status"
+                "reason.$"               = "$.Payload.reason"
+                "job_id.$"               = "$.Payload.job_id"
                 "s3_bucket.$"            = "$.Payload.s3_bucket"
                 "s3_key.$"               = "$.Payload.s3_key"
                 "product_name.$"         = "$.Payload.product_name"
                 "table_name.$"           = "$.Payload.table_name"
                 "table_number.$"         = "$.Payload.table_number"
+                "page.$"                 = "$.Payload.page"
                 "pages_processed.$"      = "$.Payload.pages_processed"
                 "table_index_on_page.$"  = "$.Payload.table_index_on_page"
                 "tables_found_on_page.$" = "$.Payload.tables_found_on_page"
                 "table.$"                = "$.Payload.table"
+                "formulations.$"         = "$.Payload.formulations"
+                "formulation_key.$"      = "$.Payload.formulation_key"
               }
-              Next = "NormalizeTableWithClaude"
+              Next = "CheckTextractStatus"
               Catch = [
                 {
                   ErrorEquals = ["States.ALL"]
                   ResultPath  = "$.error_info"
-                  Next        = "NormalizeTableWithClaude"
+                  Next        = "HandleTextractError"
                 }
               ]
+            }
+
+            # ─────────────────────────────────────────────────────────────────
+            # Step 1b: Check if Textract found table data
+            # Skip normalization if no table was found or index out of range
+            # ─────────────────────────────────────────────────────────────────
+            CheckTextractStatus = {
+              Type = "Choice"
+              Choices = [
+                {
+                  Variable      = "$.status"
+                  StringEquals  = "NO_TABLE_FOUND"
+                  Next          = "SkipNormalization"
+                },
+                {
+                  Variable      = "$.status"
+                  StringEquals  = "TABLE_INDEX_OUT_OF_RANGE"
+                  Next          = "SkipNormalization"
+                }
+              ]
+              Default = "NormalizeTableWithClaude"
+            }
+
+            # ─────────────────────────────────────────────────────────────────
+            # Handle skipped tables (no data found)
+            # ─────────────────────────────────────────────────────────────────
+            SkipNormalization = {
+              Type = "Pass"
+              Parameters = {
+                "status"         = "SKIPPED"
+                "reason.$"       = "$.reason"
+                "job_id.$"       = "$.job_id"
+                "product_name.$" = "$.product_name"
+                "table_name.$"   = "$.table_name"
+                "table_number.$" = "$.table_number"
+                "page.$"         = "$.page"
+              }
+              End = true
+            }
+
+            # ─────────────────────────────────────────────────────────────────
+            # Handle Textract errors
+            # ─────────────────────────────────────────────────────────────────
+            HandleTextractError = {
+              Type = "Pass"
+              Parameters = {
+                "status"  = "FAILED"
+                "stage"   = "textract"
+                "error.$" = "$.error_info"
+              }
+              End = true
             }
 
             # ─────────────────────────────────────────────────────────────────
