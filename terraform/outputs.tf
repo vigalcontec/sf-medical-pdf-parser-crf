@@ -36,10 +36,10 @@ output "log_group_arn" {
 # -----------------------------------------------------------------------------
 # EventBridge (when S3 trigger is enabled)
 # -----------------------------------------------------------------------------
-output "event_rule_arn" {
-  description = "EventBridge rule ARN"
-  value       = local.s3_trigger.enabled ? aws_cloudwatch_event_rule.s3_trigger[0].arn : null
-}
+#output "event_rule_arn" {
+#  description = "EventBridge rule ARN"
+#  value       = local.s3_trigger.enabled ? aws_cloudwatch_event_rule.s3_trigger[0].arn : null
+#}
 
 # -----------------------------------------------------------------------------
 # S3 Trigger Configuration
