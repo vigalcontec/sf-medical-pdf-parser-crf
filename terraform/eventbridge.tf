@@ -20,10 +20,9 @@ resource "aws_cloudwatch_event_rule" "s3_trigger" {
         name = [local.datalake.raw.bucket_name]
       }
       object = {
-        key = concat(
-          local.s3_trigger.prefix != "" ? [{ prefix = local.s3_trigger.prefix }] : [],
-          local.s3_trigger.suffix != "" ? [{ suffix = local.s3_trigger.suffix }] : []
-        )
+        key = [{
+          wildcard = "${local.s3_trigger.prefix}*${local.s3_trigger.suffix}"
+        }]
       }
     }
   })
