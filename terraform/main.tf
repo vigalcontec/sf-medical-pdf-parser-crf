@@ -126,14 +126,14 @@ resource "aws_sfn_state_machine" "main" {
               Type = "Choice"
               Choices = [
                 {
-                  Variable      = "$.status"
-                  StringEquals  = "NO_TABLE_FOUND"
-                  Next          = "SkipNormalization"
+                  Variable     = "$.status"
+                  StringEquals = "NO_TABLE_FOUND"
+                  Next         = "SkipNormalization"
                 },
                 {
-                  Variable      = "$.status"
-                  StringEquals  = "TABLE_INDEX_OUT_OF_RANGE"
-                  Next          = "SkipNormalization"
+                  Variable     = "$.status"
+                  StringEquals = "TABLE_INDEX_OUT_OF_RANGE"
+                  Next         = "SkipNormalization"
                 }
               ]
               Default = "NormalizeTableWithClaude"
